@@ -3,243 +3,999 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <title>バドミントン対戦表</title>
+  <title>バドミントン対戦表（タブレット版）</title>
+  <!-- React & Babel CDN -->
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <style>
     * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background-color: #f8fafc; color: #1e293b; }
-    button { font-family: inherit; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Meiryo", sans-serif;
+      background-color: #f1f5f9;
+      color: #0f172a;
+    }
+    button, select, input, textarea {
+      font-family: inherit;
+    }
+    /* 選択中プレイヤーのアニメーションハイライト */
+    @keyframes pulse-border {
+      0% { box-shadow: 0 0 0 0 rgba(234, 88, 12, 0.7); }
+      70% { box-shadow: 0 0 0 6px rgba(234, 88, 12, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(234, 88, 12, 0); }
+    }
+    .swap-selected {
+      background-color: #ffedd5 !important;
+      border: 3px solid #ea580c !important;
+      animation: pulse-border 1.5s infinite;
+    }
   </style>
 </head>
 <body>
   <div id="root"></div>
+
   <script type="text/babel">
     const { useState, useEffect } = React;
+
+    const STORAGE_KEY = "badminton_app_tablet_v2";
+
     const makePairKey = (id1, id2) => [id1, id2].sort().join('__');
     const makeQuadKey = (ids) => [...ids].sort().join('__');
 
-    const generateNextRound = (players, courtCount, roundNumber, historyRounds) => {
+    // ==========================================
+    // 対戦表生成アルゴリズム（ペア固定対応）
+    // ==========================================
+    const generateNextRound = (players, courtCount, roundNumber, historyRounds, fixedPairs = []) => {
+      // 1. 参加可能者の抽出
       const available = players.filter(p => p.status !== 'left' && p.status !== 'rest_indef' && p.status !== 'rest_next');
+      
+      // 有効な固定ペアの抽出（2人とも参加可能な場合のみ固定適用）
+      const activeFixedPairs = [];
+      const fixedPlayerIds = new Set();
+      fixedPairs.forEach(pair => {
+        const p1 = available.find(p => p.id === pair[0]);
+        const p2 = available.find(p => p.id === pair[1]);
+        if (p1 && p2) {
+          activeFixedPairs.push([p1, p2]);
+          fixedPlayerIds.add(p1.id);
+          fixedPlayerIds.add(p2.id);
+        }
+      });
+
       const neededCount = Math.min(courtCount * 4, Math.floor(available.length / 4) * 4);
       const activeCourts = neededCount / 4;
+
       if (activeCourts === 0) {
-        return { roundNumber, matches: [], restingPlayerIds: players.map(p => p.id), status: 'draft', warnings: ['出場可能人数が4人未満のため作成できません。'] };
+        return {
+          roundNumber,
+          matches: [],
+          restingPlayerIds: players.map(p => p.id),
+          status: 'draft',
+          warnings: ['出場可能な人数が4人未満のため、対戦表を作成できません。']
+        };
       }
-      const pairCounts = new Map(), oppCounts = new Map(), quadCounts = new Map();
-      const recent1Pairs = new Set(), recent2Pairs = new Set(), recent1Opps = new Set(), recent2Opps = new Set();
+
+      // 過去履歴の集計
+      const pairCounts = new Map();
+      const oppCounts = new Map();
+      const quadCounts = new Map();
+      const recent1Pairs = new Set();
+      const recent2Pairs = new Set();
+      const recent1Opps = new Set();
+      const recent2Opps = new Set();
+
       const completed = historyRounds.filter(r => r.status === 'completed');
       const totalRounds = completed.length;
+
       completed.forEach((r, idx) => {
-        const isL1 = idx === totalRounds - 1, isL2 = idx === totalRounds - 2;
+        const isL1 = idx === totalRounds - 1;
+        const isL2 = idx === totalRounds - 2;
         r.matches.forEach(m => {
-          const pA = makePairKey(m.teamA[0], m.teamA[1]), pB = makePairKey(m.teamB[0], m.teamB[1]);
+          const pA = makePairKey(m.teamA[0], m.teamA[1]);
+          const pB = makePairKey(m.teamB[0], m.teamB[1]);
           pairCounts.set(pA, (pairCounts.get(pA) || 0) + 1);
           pairCounts.set(pB, (pairCounts.get(pB) || 0) + 1);
           if (isL1) { recent1Pairs.add(pA); recent1Pairs.add(pB); }
           if (isL2) { recent2Pairs.add(pA); recent2Pairs.add(pB); }
-          const opps = [makePairKey(m.teamA[0], m.teamB[0]), makePairKey(m.teamA[0], m.teamB[1]), makePairKey(m.teamA[1], m.teamB[0]), makePairKey(m.teamA[1], m.teamB[1])];
+
+          const opps = [
+            makePairKey(m.teamA[0], m.teamB[0]),
+            makePairKey(m.teamA[0], m.teamB[1]),
+            makePairKey(m.teamA[1], m.teamB[0]),
+            makePairKey(m.teamA[1], m.teamB[1])
+          ];
           opps.forEach(opp => {
             oppCounts.set(opp, (oppCounts.get(opp) || 0) + 1);
             if (isL1) recent1Opps.add(opp);
             if (isL2) recent2Opps.add(opp);
           });
+
           const q = makeQuadKey([...m.teamA, ...m.teamB]);
           quadCounts.set(q, (quadCounts.get(q) || 0) + 1);
         });
       });
-      const scored = available.map(p => {
+
+      // 出場ユニット（固定ペアは1ユニット、個人は1ユニット）のスコアリング
+      // 固定ペアユニット
+      const units = [];
+      activeFixedPairs.forEach(pair => {
+        const avgMatches = (pair[0].matchCount + pair[1].matchCount) / 2;
+        let score = avgMatches * 100;
+        if (pair[0].lastRestedRound === roundNumber - 1 || pair[1].lastRestedRound === roundNumber - 1) score -= 45;
+        score += Math.random() * 5;
+        units.push({ type: 'pair', players: pair, size: 2, score });
+      });
+
+      // 個人ユニット
+      available.filter(p => !fixedPlayerIds.has(p.id)).forEach(p => {
         let score = p.matchCount * 100;
         if (p.lastRestedRound === roundNumber - 1) score -= 45;
         if (p.status === 'leave_early') score -= 30;
         if (p.status === 'prefer_play') score -= 15;
         score += Math.random() * 5;
-        return { player: p, score };
+        units.push({ type: 'single', players: [p], size: 1, score });
       });
-      scored.sort((a, b) => a.score - b.score);
-      const selected = scored.slice(0, neededCount).map(s => s.player);
-      const resting = players.filter(p => !selected.some(s => s.id === p.id));
-      let bestMatches = [], bestPenalty = Infinity, bestWarnings = [];
-      for (let iter = 0; iter < 500; iter++) {
-        const pool = [...selected].sort(() => Math.random() - 0.5);
+
+      units.sort((a, b) => a.score - b.score);
+
+      // 必要人数（neededCount）分をユニットから選出
+      const selectedPlayers = [];
+      for (const u of units) {
+        if (selectedPlayers.length + u.size <= neededCount) {
+          selectedPlayers.push(...u.players);
+        }
+      }
+
+      // もしユニットの組み合わせで端数が出た場合、残り個人から補充
+      if (selectedPlayers.length < neededCount) {
+        const notSelected = available.filter(p => !selectedPlayers.some(sp => sp.id === p.id));
+        notSelected.sort((a, b) => a.matchCount - b.matchCount);
+        while (selectedPlayers.length < neededCount && notSelected.length > 0) {
+          selectedPlayers.push(notSelected.shift());
+        }
+      }
+
+      const resting = players.filter(p => !selectedPlayers.some(s => s.id === p.id));
+
+      // 最適組み合わせ探索（モンテカルロ法 400試行）
+      let bestMatches = [];
+      let bestPenalty = Infinity;
+
+      for (let iter = 0; iter < 400; iter++) {
+        // 固定ペアは維持したまま配置
+        const selectedPairs = [];
+        const individualPool = [];
+
+        // 固定ペアを登録
+        activeFixedPairs.forEach(pair => {
+          if (selectedPlayers.some(p => p.id === pair[0].id) && selectedPlayers.some(p => p.id === pair[1].id)) {
+            selectedPairs.push([pair[0], pair[1]]);
+          }
+        });
+
+        // 固定ペア以外の出場者
+        const usedIds = new Set(selectedPairs.flatMap(pair => [pair[0].id, pair[1].id]));
+        selectedPlayers.forEach(p => {
+          if (!usedIds.has(p.id)) individualPool.push(p);
+        });
+
+        // 残りの個人をランダムに2人組ペアにする
+        individualPool.sort(() => Math.random() - 0.5);
+        for (let i = 0; i < individualPool.length; i += 2) {
+          if (individualPool[i + 1]) {
+            selectedPairs.push([individualPool[i], individualPool[i + 1]]);
+          }
+        }
+
+        // ペア同士を各コートにシャッフル配置
+        selectedPairs.sort(() => Math.random() - 0.5);
+
         let penalty = 0;
         const curMatches = [];
-        const loopWarnings = [];
+
         for (let c = 0; c < activeCourts; c++) {
-          const p1 = pool[c * 4], p2 = pool[c * 4 + 1], p3 = pool[c * 4 + 2], p4 = pool[c * 4 + 3];
-          const pA = makePairKey(p1.id, p2.id), pB = makePairKey(p3.id, p4.id);
-          penalty += (pairCounts.get(pA) || 0) * 50 + (pairCounts.get(pB) || 0) * 50;
-          if (recent1Pairs.has(pA)) penalty += 500;
-          if (recent1Pairs.has(pB)) penalty += 500;
-          if (recent1Pairs.has(pA) && recent2Pairs.has(pA)) { penalty += 10000; loopWarnings.push(`ペア3連続: ${p1.name} & ${p2.name}`); }
-          if (recent1Pairs.has(pB) && recent2Pairs.has(pB)) { penalty += 10000; loopWarnings.push(`ペア3連続: ${p3.name} & ${p4.name}`); }
-          const opps = [makePairKey(p1.id, p3.id), makePairKey(p1.id, p4.id), makePairKey(p2.id, p3.id), makePairKey(p2.id, p4.id)];
+          const tA = selectedPairs[c * 2];
+          const tB = selectedPairs[c * 2 + 1];
+          if (!tA || !tB) continue;
+
+          const pA = makePairKey(tA[0].id, tA[1].id);
+          const pB = makePairKey(tB[0].id, tB[1].id);
+
+          // ペア重複ペナルティ（固定ペア以外）
+          if (!fixedPairs.some(fp => makePairKey(fp[0], fp[1]) === pA)) {
+            penalty += (pairCounts.get(pA) || 0) * 50;
+            if (recent1Pairs.has(pA)) penalty += 500;
+            if (recent1Pairs.has(pA) && recent2Pairs.has(pA)) penalty += 5000;
+          }
+          if (!fixedPairs.some(fp => makePairKey(fp[0], fp[1]) === pB)) {
+            penalty += (pairCounts.get(pB) || 0) * 50;
+            if (recent1Pairs.has(pB)) penalty += 500;
+            if (recent1Pairs.has(pB) && recent2Pairs.has(pB)) penalty += 5000;
+          }
+
+          // 対戦相手ペナルティ
+          const opps = [
+            makePairKey(tA[0].id, tB[0].id),
+            makePairKey(tA[0].id, tB[1].id),
+            makePairKey(tA[1].id, tB[0].id),
+            makePairKey(tA[1].id, tB[1].id)
+          ];
           opps.forEach(opp => {
             penalty += (oppCounts.get(opp) || 0) * 20;
             if (recent1Opps.has(opp)) penalty += 200;
-            if (recent1Opps.has(opp) && recent2Opps.has(opp)) penalty += 8000;
+            if (recent1Opps.has(opp) && recent2Opps.has(opp)) penalty += 3000;
           });
-          const q = makeQuadKey([p1.id, p2.id, p3.id, p4.id]);
+
+          // 同一4人重複
+          const q = makeQuadKey([tA[0].id, tA[1].id, tB[0].id, tB[1].id]);
           penalty += (quadCounts.get(q) || 0) * 100;
-          curMatches.push({ id: `m_${roundNumber}_${c + 1}`, courtNumber: c + 1, teamA: [p1.id, p2.id], teamB: [p3.id, p4.id] });
+
+          curMatches.push({
+            id: `m_${roundNumber}_${c + 1}`,
+            courtNumber: c + 1,
+            teamA: [tA[0].id, tA[1].id],
+            teamB: [tB[0].id, tB[1].id]
+          });
         }
+
         if (penalty < bestPenalty) {
           bestPenalty = penalty;
           bestMatches = curMatches;
-          bestWarnings = loopWarnings;
         }
       }
-      const warnings = [];
-      if (bestPenalty > 200) warnings.push('重複が含まれる組み合わせです。');
-      warnings.push(...bestWarnings);
-      return { roundNumber, matches: bestMatches, restingPlayerIds: resting.map(p => p.id), status: 'draft', warnings: Array.from(new Set(warnings)) };
+
+      return {
+        roundNumber,
+        matches: bestMatches,
+        restingPlayerIds: resting.map(p => p.id),
+        status: 'draft',
+        warnings: bestPenalty > 300 ? ['参加人数の都合上、過去に対戦した組み合わせが含まれています。'] : []
+      };
     };
 
+    // ==========================================
+    // メインコンポーネント
+    // ==========================================
     function App() {
       const [session, setSession] = useState(null);
-      const [tab, setTab] = useState('match');
+      const [tab, setTab] = useState('match'); // 'match' | 'players' | 'create'
       const [newCourts, setNewCourts] = useState(2);
-      const [names, setNames] = useState('佐藤\n鈴木\n高橋\n田中\n伊藤\n渡辺\n山本\n中村');
+      const [namesText, setNamesText] = useState('佐藤\n鈴木\n高橋\n田中\n伊藤\n渡辺\n山本\n中村');
       const [addName, setAddName] = useState('');
 
+      // 手動スワップ用選択状態
+      const [swapSource, setSwapSource] = useState(null);
+
+      // ペア固定選択用（参加者タブ）
+      const [pairSelectFirst, setPairSelectFirst] = useState(null);
+
+      // 初回起動時: localStorage から完全復元（ブラウザ更新対策）
       useEffect(() => {
-        const saved = localStorage.getItem('badminton_app_data');
-        if (saved) { setSession(JSON.parse(saved)); setTab('match'); } else { setTab('create'); }
+        try {
+          const saved = localStorage.getItem(STORAGE_KEY);
+          if (saved) {
+            setSession(JSON.parse(saved));
+            setTab('match');
+          } else {
+            setTab('create');
+          }
+        } catch (e) {
+          console.error("Failed to load session", e);
+          setTab('create');
+        }
       }, []);
 
-      const save = (s) => { setSession(s); localStorage.setItem('badminton_app_data', JSON.stringify(s)); };
+      // 状態変更時に必ず localStorage に保存
+      const saveState = (updatedSession) => {
+        setSession(updatedSession);
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSession));
+        } catch (e) {
+          console.error("Failed to save session", e);
+        }
+      };
 
+      // 1. 新規練習会の作成
       const handleCreate = () => {
-        const list = names.split(/[\n,、\s]+/).map(n => n.trim()).filter(n => n.length > 0);
-        if (list.length < 4) { alert('4人以上登録してください'); return; }
-        const players = list.map((n, i) => ({ id: `p_${Date.now()}_${i}`, name: n, status: 'normal', matchCount: 0, restCount: 0, lastPlayedRound: -1, lastRestedRound: -1 }));
-        const round = generateNextRound(players, newCourts, 1, []);
-        save({ venue: '体育館', courtCount: newCourts, players, currentRoundNumber: 1, historyRounds: [], currentRound: round });
+        const list = namesText.split(/[\n,、\s]+/).map(n => n.trim()).filter(n => n.length > 0);
+        if (list.length < 4) {
+          alert('参加者を4人以上入力してください。');
+          return;
+        }
+
+        const players = list.map((n, i) => ({
+          id: `p_${Date.now()}_${i}`,
+          name: n,
+          status: 'normal',
+          matchCount: 0,
+          restCount: 0,
+          lastPlayedRound: -1,
+          lastRestedRound: -1
+        }));
+
+        const initialRound = generateNextRound(players, newCourts, 1, [], []);
+
+        const newSession = {
+          courtCount: newCourts,
+          players,
+          fixedPairs: [], // [[id1, id2], ...]
+          currentRoundNumber: 1,
+          historyRounds: [],
+          currentRound: initialRound
+        };
+
+        saveState(newSession);
         setTab('match');
       };
 
-      const handleStart = () => save({ ...session, currentRound: { ...session.currentRound, status: 'in_progress' } });
+      // 2. データの完全リセット（リセットボタンを押した時だけ全消去）
+      const handleFullReset = () => {
+        const ok = confirm("⚠️ 練習会のすべてのデータ（参加者名簿・試合結果）を完全に消去して初期状態に戻しますか？");
+        if (!ok) return;
 
-      const handleComplete = () => {
-        if (!confirm('試合を終了し次の対戦表を作成しますか？')) return;
-        const r = session.currentRound, played = new Set();
-        r.matches.forEach(m => { m.teamA.forEach(id => played.add(id)); m.teamB.forEach(id => played.add(id)); });
-        const updatedPlayers = session.players.map(p => ({
-          ...p,
-          status: p.status === 'rest_next' ? 'normal' : p.status,
-          matchCount: played.has(p.id) ? p.matchCount + 1 : p.matchCount,
-          restCount: !played.has(p.id) && p.status !== 'left' ? p.restCount + 1 : p.restCount,
-          lastPlayedRound: played.has(p.id) ? r.roundNumber : p.lastPlayedRound,
-          lastRestedRound: !played.has(p.id) ? r.roundNumber : p.lastRestedRound
-        }));
-        const nextHist = [...session.historyRounds, { ...r, status: 'completed' }];
-        const nextNum = r.roundNumber + 1;
-        save({ ...session, players: updatedPlayers, historyRounds: nextHist, currentRoundNumber: nextNum, currentRound: generateNextRound(updatedPlayers, session.courtCount, nextNum, nextHist) });
+        localStorage.removeItem(STORAGE_KEY);
+        setSession(null);
+        setTab('create');
+        setSwapSource(null);
+        setPairSelectFirst(null);
       };
 
+      // 3. 試合開始
+      const handleStart = () => {
+        if (!session || !session.currentRound) return;
+        saveState({
+          ...session,
+          currentRound: { ...session.currentRound, status: 'in_progress' }
+        });
+      };
+
+      // 4. 試合終了＆次の対戦表作成
+      const handleComplete = () => {
+        if (!confirm('このラウンドを終了し、試合数を確定して次の対戦表を作成しますか？')) return;
+        const r = session.currentRound;
+        const playedIds = new Set();
+        r.matches.forEach(m => {
+          m.teamA.forEach(id => playedIds.add(id));
+          m.teamB.forEach(id => playedIds.add(id));
+        });
+
+        const updatedPlayers = session.players.map(p => {
+          const isPlayed = playedIds.has(p.id);
+          const isRested = !isPlayed && p.status !== 'left';
+          return {
+            ...p,
+            status: p.status === 'rest_next' ? 'normal' : p.status, // 1回休みを通常復帰
+            matchCount: isPlayed ? p.matchCount + 1 : p.matchCount,
+            restCount: isRested ? p.restCount + 1 : p.restCount,
+            lastPlayedRound: isPlayed ? r.roundNumber : p.lastPlayedRound,
+            lastRestedRound: isRested ? r.roundNumber : p.lastRestedRound
+          };
+        });
+
+        const nextHist = [...session.historyRounds, { ...r, status: 'completed' }];
+        const nextNum = r.roundNumber + 1;
+        const nextRound = generateNextRound(updatedPlayers, session.courtCount, nextNum, nextHist, session.fixedPairs || []);
+
+        saveState({
+          ...session,
+          players: updatedPlayers,
+          historyRounds: nextHist,
+          currentRoundNumber: nextNum,
+          currentRound: nextRound
+        });
+        setSwapSource(null);
+      };
+
+      // 5. 試合終了の取り消し（Undo）
       const handleUndo = () => {
-        if (!session.historyRounds.length) { alert('戻せる履歴がありません'); return; }
-        if (!confirm('直前の試合終了を取り消しますか？')) return;
-        const last = session.historyRounds[session.historyRounds.length - 1];
-        const played = new Set();
-        last.matches.forEach(m => { m.teamA.forEach(id => played.add(id)); m.teamB.forEach(id => played.add(id)); });
+        if (!session.historyRounds.length) {
+          alert('取り消せる過去の履歴がありません。');
+          return;
+        }
+        if (!confirm('直前の試合終了を取り消しますか？試合数が正しく巻き戻ります。')) return;
+
+        const lastRound = session.historyRounds[session.historyRounds.length - 1];
+        const nextHist = session.historyRounds.slice(0, -1);
+        const playedIds = new Set();
+        lastRound.matches.forEach(m => {
+          m.teamA.forEach(id => playedIds.add(id));
+          m.teamB.forEach(id => playedIds.add(id));
+        });
+
         const updated = session.players.map(p => ({
           ...p,
-          matchCount: played.has(p.id) ? Math.max(0, p.matchCount - 1) : p.matchCount,
-          restCount: !played.has(p.id) && p.status !== 'left' ? Math.max(0, p.restCount - 1) : p.restCount
+          matchCount: playedIds.has(p.id) ? Math.max(0, p.matchCount - 1) : p.matchCount,
+          restCount: !playedIds.has(p.id) && p.status !== 'left' ? Math.max(0, p.restCount - 1) : p.restCount
         }));
-        save({ ...session, players: updated, historyRounds: session.historyRounds.slice(0, -1), currentRoundNumber: last.roundNumber, currentRound: { ...last, status: 'in_progress' } });
+
+        saveState({
+          ...session,
+          players: updated,
+          historyRounds: nextHist,
+          currentRoundNumber: lastRound.roundNumber,
+          currentRound: { ...lastRound, status: 'in_progress' }
+        });
+        setSwapSource(null);
+      };
+
+      // 6. 再抽選
+      const handleReroll = () => {
+        if (session.currentRound?.status === 'in_progress') {
+          if (!confirm('試合進行中ですが再抽選しますか？')) return;
+        }
+        const round = generateNextRound(session.players, session.courtCount, session.currentRoundNumber, session.historyRounds, session.fixedPairs || []);
+        saveState({ ...session, currentRound: round });
+        setSwapSource(null);
+      };
+
+      // ==========================================
+      // タップで簡単手動スワップ機能
+      // ==========================================
+      const handlePlayerTap = (target) => {
+        // target: { type: 'court', matchIdx, team: 'teamA'|'teamB', pos: 0|1, playerId }
+        // または: { type: 'rest', playerId }
+
+        if (!swapSource) {
+          // 1人目を選択
+          setSwapSource(target);
+        } else {
+          // 同じ人をタップしたら選択解除
+          if (swapSource.playerId === target.playerId) {
+            setSwapSource(null);
+            return;
+          }
+
+          // 2人目と入れ替え実行
+          const matches = [...session.currentRound.matches];
+          let restingIds = [...session.currentRound.restingPlayerIds];
+
+          const p1 = swapSource.playerId;
+          const p2 = target.playerId;
+
+          // コート選手 vs コート選手
+          if (swapSource.type === 'court' && target.type === 'court') {
+            matches[swapSource.matchIdx][swapSource.team][swapSource.pos] = p2;
+            matches[target.matchIdx][target.team][target.pos] = p1;
+          }
+          // コート選手 vs 休憩選手
+          else if (swapSource.type === 'court' && target.type === 'rest') {
+            matches[swapSource.matchIdx][swapSource.team][swapSource.pos] = p2;
+            restingIds = restingIds.map(id => id === p2 ? p1 : id);
+          }
+          // 休憩選手 vs コート選手
+          else if (swapSource.type === 'rest' && target.type === 'court') {
+            matches[target.matchIdx][target.team][target.pos] = p1;
+            restingIds = restingIds.map(id => id === p1 ? p2 : id);
+          }
+
+          saveState({
+            ...session,
+            currentRound: {
+              ...session.currentRound,
+              matches,
+              restingPlayerIds: restingIds
+            }
+          });
+
+          setSwapSource(null);
+        }
+      };
+
+      // ==========================================
+      // ペア固定の操作
+      // ==========================================
+      const handleToggleFixPair = (pId) => {
+        if (!pairSelectFirst) {
+          setPairSelectFirst(pId);
+        } else {
+          if (pairSelectFirst === pId) {
+            setPairSelectFirst(null);
+            return;
+          }
+          // 2人揃ったので固定ペアに登録
+          const currentFixed = session.fixedPairs || [];
+          // すでにどちらかが他のペアに含まれていたら除外
+          const filtered = currentFixed.filter(pair => !pair.includes(pairSelectFirst) && !pair.includes(pId));
+          const updatedPairs = [...filtered, [pairSelectFirst, pId]];
+
+          saveState({
+            ...session,
+            fixedPairs: updatedPairs
+          });
+          setPairSelectFirst(null);
+        }
+      };
+
+      const handleRemoveFixedPair = (pairIndex) => {
+        const updated = (session.fixedPairs || []).filter((_, idx) => idx !== pairIndex);
+        saveState({
+          ...session,
+          fixedPairs: updated
+        });
       };
 
       const getP = (id) => session?.players.find(p => p.id === id);
 
       return (
-        <div style={{ maxWidth: '480px', margin: '0 auto', minHeight: '100vh', backgroundColor: '#fff', paddingBottom: '70px' }}>
-          <div style={{ backgroundColor: '#1e3a8a', color: '#fff', padding: '14px', position: 'sticky', top: 0, zIndex: 10, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ maxWidth: '850px', margin: '0 auto', minHeight: '100vh', backgroundColor: '#ffffff', paddingBottom: '90px', boxShadow: '0 0 15px rgba(0,0,0,0.08)' }}>
+          
+          {/* ================= ヘッダー（特大・高視認性） ================= */}
+          <header style={{ backgroundColor: '#1e3a8a', color: '#ffffff', padding: '16px 20px', position: 'sticky', top: 0, zIndex: 30, display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 2px 6px rgba(0,0,0,0.15)' }}>
             <div>
-              <div style={{ fontSize: '1.1rem', fontWeight: 'bold' }}>🏸 バドミントン対戦表</div>
-              {session && <div style={{ fontSize: '0.75rem', color: '#93c5fd' }}>コート {session.courtCount}面 | 第 {session.currentRoundNumber} 試合</div>}
+              <div style={{ fontSize: '1.5rem', fontWeight: 900, letterSpacing: '0.05em' }}>🏸 バドミントン対戦表</div>
+              {session && (
+                <div style={{ fontSize: '1.05rem', color: '#93c5fd', marginTop: '4px', fontWeight: 700 }}>
+                  コート {session.courtCount}面 ｜ <span style={{ color: '#fef08a' }}>第 {session.currentRoundNumber} 試合</span>
+                </div>
+              )}
             </div>
-            {session && <span style={{ fontSize: '0.75rem', padding: '4px 8px', borderRadius: '4px', backgroundColor: session.currentRound?.status === 'in_progress' ? '#ef4444' : '#0284c7' }}>{session.currentRound?.status === 'in_progress' ? '試合中' : '準備中'}</span>}
-          </div>
-          <div style={{ padding: '14px' }}>
+            {session && (
+              <div style={{ textAlign: 'right' }}>
+                <span style={{
+                  fontSize: '1rem',
+                  padding: '6px 14px',
+                  borderRadius: '6px',
+                  fontWeight: 900,
+                  backgroundColor: session.currentRound?.status === 'in_progress' ? '#dc2626' : '#0284c7',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                }}>
+                  {session.currentRound?.status === 'in_progress' ? '▶ 試合中' : '準備中'}
+                </span>
+              </div>
+            )}
+          </header>
+
+          <main style={{ padding: '16px 20px' }}>
+
+            {/* ================= ① 対戦表タブ（タブレット縦置き特化） ================= */}
             {tab === 'match' && session && (
               <div>
-                {session.currentRound?.matches.map(m => (
-                  <div key={m.id} style={{ border: '2px solid #38bdf8', borderRadius: '8px', marginBottom: '12px', overflow: 'hidden' }}>
-                    <div style={{ backgroundColor: '#0284c7', color: '#fff', padding: '6px 12px', fontWeight: 'bold', fontSize: '0.9rem' }}>第 {m.courtNumber} コート</div>
-                    <div style={{ display: 'flex', padding: '10px', alignItems: 'center', backgroundColor: '#f0f9ff' }}>
-                      <div style={{ flex: 1, backgroundColor: '#fff', padding: '8px', borderRadius: '6px', textAlign: 'center' }}>
-                        <div style={{ fontWeight: 'bold' }}>{getP(m.teamA[0])?.name}</div>
-                        <div style={{ fontWeight: 'bold' }}>{getP(m.teamA[1])?.name}</div>
+                {/* 手動入れ替えの案内 */}
+                <div style={{ backgroundColor: swapSource ? '#ffedd5' : '#e0f2fe', border: `2px solid ${swapSource ? '#ea580c' : '#38bdf8'}`, borderRadius: '8px', padding: '10px 14px', marginBottom: '16px', fontSize: '1rem', fontWeight: 700, color: swapSource ? '#9a3412' : '#0369a1', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>
+                    {swapSource ? `🔄 【${getP(swapSource.playerId)?.name}】を選択中 ➔ 入れ替えたい相手をタップ！` : '💡 選手名をタップして別の選手を選ぶと、その場で手動入れ替えできます'}
+                  </span>
+                  {swapSource && (
+                    <button onClick={() => setSwapSource(null)} style={{ padding: '4px 8px', backgroundColor: '#ea580c', color: '#fff', border: 'none', borderRadius: '4px', fontWeight: 'bold', fontSize: '0.85rem' }}>解除</button>
+                  )}
+                </div>
+
+                {/* コート一覧 */}
+                {session.currentRound?.matches.map((m, mIdx) => (
+                  <div key={m.id} style={{ border: '3px solid #0284c7', borderRadius: '12px', marginBottom: '18px', backgroundColor: '#f8fafc', overflow: 'hidden', boxShadow: '0 4px 8px rgba(0,0,0,0.06)' }}>
+                    {/* コートタイトルバー */}
+                    <div style={{ backgroundColor: '#0284c7', color: '#ffffff', padding: '10px 16px', fontWeight: 900, fontSize: '1.35rem', display: 'flex', justifyContent: 'space-between' }}>
+                      <span>第 {m.courtNumber} コート</span>
+                      <span style={{ fontSize: '1rem', fontWeight: 600 }}>ダブルス</span>
+                    </div>
+
+                    {/* 対戦カード */}
+                    <div style={{ display: 'flex', alignItems: 'center', padding: '14px', gap: '10px' }}>
+                      
+                      {/* TEAM A */}
+                      <div style={{ flex: 1, backgroundColor: '#ffffff', borderRadius: '8px', border: '2px solid #cbd5e1', padding: '8px' }}>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#0284c7', marginBottom: '6px' }}>TEAM A</div>
+                        {[0, 1].map((pos) => {
+                          const pId = m.teamA[pos];
+                          const isSelected = swapSource?.playerId === pId;
+                          return (
+                            <div
+                              key={pos}
+                              onClick={() => handlePlayerTap({ type: 'court', matchIdx: mIdx, team: 'teamA', pos, playerId: pId })}
+                              className={isSelected ? 'swap-selected' : ''}
+                              style={{
+                                fontSize: '1.45rem',
+                                fontWeight: 800,
+                                padding: '10px 6px',
+                                borderBottom: pos === 0 ? '2px dashed #e2e8f0' : 'none',
+                                cursor: 'pointer',
+                                borderRadius: '4px',
+                                textAlign: 'center',
+                                color: '#0f172a'
+                              }}
+                            >
+                              {getP(pId)?.name || '未設定'}
+                            </div>
+                          );
+                        })}
                       </div>
-                      <div style={{ padding: '0 8px', fontWeight: 'bold', color: '#64748b' }}>VS</div>
-                      <div style={{ flex: 1, backgroundColor: '#fff', padding: '8px', borderRadius: '6px', textAlign: 'center' }}>
-                        <div style={{ fontWeight: 'bold' }}>{getP(m.teamB[0])?.name}</div>
-                        <div style={{ fontWeight: 'bold' }}>{getP(m.teamB[1])?.name}</div>
+
+                      {/* VS表示 */}
+                      <div style={{ fontSize: '1.4rem', fontWeight: 900, color: '#64748b', padding: '0 4px' }}>VS</div>
+
+                      {/* TEAM B */}
+                      <div style={{ flex: 1, backgroundColor: '#ffffff', borderRadius: '8px', border: '2px solid #cbd5e1', padding: '8px' }}>
+                        <div style={{ fontSize: '0.9rem', fontWeight: 800, color: '#0284c7', marginBottom: '6px' }}>TEAM B</div>
+                        {[0, 1].map((pos) => {
+                          const pId = m.teamB[pos];
+                          const isSelected = swapSource?.playerId === pId;
+                          return (
+                            <div
+                              key={pos}
+                              onClick={() => handlePlayerTap({ type: 'court', matchIdx: mIdx, team: 'teamB', pos, playerId: pId })}
+                              className={isSelected ? 'swap-selected' : ''}
+                              style={{
+                                fontSize: '1.45rem',
+                                fontWeight: 800,
+                                padding: '10px 6px',
+                                borderBottom: pos === 0 ? '2px dashed #e2e8f0' : 'none',
+                                cursor: 'pointer',
+                                borderRadius: '4px',
+                                textAlign: 'center',
+                                color: '#0f172a'
+                              }}
+                            >
+                              {getP(pId)?.name || '未設定'}
+                            </div>
+                          );
+                        })}
                       </div>
                     </div>
                   </div>
                 ))}
-                <div style={{ backgroundColor: '#f8fafc', padding: '10px', borderRadius: '6px', border: '1px solid #cbd5e1', marginBottom: '14px', fontSize: '0.85rem' }}>
-                  <b>☕ 休憩:</b> {session.currentRound?.restingPlayerIds.map(id => getP(id)?.name).join('、 ') || 'なし'}
+
+                {/* 休憩者一覧（特大表示・タップでコートと交代可能） */}
+                <div style={{ backgroundColor: '#f1f5f9', border: '2px solid #cbd5e1', borderRadius: '10px', padding: '14px 16px', marginBottom: '20px' }}>
+                  <div style={{ fontSize: '1.15rem', fontWeight: 800, color: '#475569', marginBottom: '10px' }}>
+                    ☕ 今回の休憩者 ({session.currentRound?.restingPlayerIds.length || 0}人)
+                    <span style={{ fontSize: '0.85rem', fontWeight: 'normal', color: '#64748b', marginLeft: '8px' }}>※タップでコートの選手と交代できます</span>
+                  </div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                    {session.currentRound?.restingPlayerIds.map((id) => {
+                      const isSelected = swapSource?.playerId === id;
+                      return (
+                        <div
+                          key={id}
+                          onClick={() => handlePlayerTap({ type: 'rest', playerId: id })}
+                          className={isSelected ? 'swap-selected' : ''}
+                          style={{
+                            fontSize: '1.25rem',
+                            fontWeight: 800,
+                            backgroundColor: '#ffffff',
+                            border: '2px solid #94a3b8',
+                            padding: '8px 14px',
+                            borderRadius: '8px',
+                            cursor: 'pointer',
+                            color: '#334155'
+                          }}
+                        >
+                          {getP(id)?.name}
+                          {getP(id)?.status === 'rest_next' && <span style={{ fontSize: '0.8rem', color: '#dc2626' }}> (1休)</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
-                {session.currentRound?.status !== 'in_progress' ? (
-                  <button onClick={handleStart} style={{ width: '100%', padding: '14px', backgroundColor: '#0284c7', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1rem' }}>▶ 試合を開始する</button>
-                ) : (
-                  <button onClick={handleComplete} style={{ width: '100%', padding: '14px', backgroundColor: '#10b981', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1rem' }}>✓ 試合終了 & 次の対戦表を作成</button>
-                )}
-                <div style={{ display: 'flex', gap: '8px', marginTop: '10px' }}>
-                  <button onClick={() => save({ ...session, currentRound: generateNextRound(session.players, session.courtCount, session.currentRoundNumber, session.historyRounds) })} style={{ flex: 1, padding: '10px', backgroundColor: '#fff', border: '1px solid #cbd5e1', borderRadius: '6px', fontSize: '0.85rem' }}>🎲 再抽選</button>
-                  <button onClick={handleUndo} style={{ flex: 1, padding: '10px', backgroundColor: '#fff', border: '1px solid #ef4444', color: '#ef4444', borderRadius: '6px', fontSize: '0.85rem' }}>↩ 1つ戻す</button>
+
+                {/* メイン操作ボタン（特大） */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {session.currentRound?.status !== 'in_progress' ? (
+                    <button
+                      onClick={handleStart}
+                      style={{
+                        backgroundColor: '#0284c7',
+                        color: '#ffffff',
+                        border: 'none',
+                        padding: '18px',
+                        borderRadius: '10px',
+                        fontSize: '1.45rem',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                      }}
+                    >
+                      ▶ 試合を開始する
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleComplete}
+                      style={{
+                        backgroundColor: '#16a34a',
+                        color: '#ffffff',
+                        border: 'none',
+                        padding: '18px',
+                        borderRadius: '10px',
+                        fontSize: '1.45rem',
+                        fontWeight: 900,
+                        cursor: 'pointer',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                      }}
+                    >
+                      ✓ 試合終了 ＆ 次の対戦表を作成
+                    </button>
+                  )}
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '4px' }}>
+                    <button
+                      onClick={handleReroll}
+                      style={{
+                        backgroundColor: '#ffffff',
+                        border: '2px solid #cbd5e1',
+                        color: '#334155',
+                        padding: '14px',
+                        borderRadius: '8px',
+                        fontSize: '1.1rem',
+                        fontWeight: 800,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      🎲 対戦表を再抽選
+                    </button>
+                    <button
+                      onClick={handleUndo}
+                      style={{
+                        backgroundColor: '#ffffff',
+                        border: '2px solid #ef4444',
+                        color: '#ef4444',
+                        padding: '14px',
+                        borderRadius: '8px',
+                        fontSize: '1.1rem',
+                        fontWeight: 800,
+                        cursor: 'pointer'
+                      }}
+                    >
+                      ↩ 前の試合に戻す (Undo)
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
+
+            {/* ================= ② 参加者管理 ＆ ペア固定タブ ================= */}
             {tab === 'players' && session && (
               <div>
-                <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
-                  <input type="text" placeholder="途中参加の名前" value={addName} onChange={e => setAddName(e.target.value)} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1' }} />
-                  <button onClick={() => { if (!addName.trim()) return; save({ ...session, players: [...session.players, { id: `p_${Date.now()}`, name: addName.trim(), status: 'normal', matchCount: 0, restCount: 0, lastPlayedRound: -1, lastRestedRound: -1 }] }); setAddName(''); }} style={{ padding: '8px 14px', backgroundColor: '#0284c7', color: '#fff', border: 'none', borderRadius: '6px' }}>追加</button>
-                </div>
-                {session.players.map(p => (
-                  <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px', borderBottom: '1px solid #e2e8f0' }}>
-                    <div><b>{p.name}</b> <span style={{ fontSize: '0.75rem', color: '#64748b' }}>({p.matchCount}試合/{p.restCount}休)</span></div>
-                    <select value={p.status} onChange={e => save({ ...session, players: session.players.map(x => x.id === p.id ? { ...x, status: e.target.value } : x) })} style={{ fontSize: '0.8rem', padding: '4px' }}>
-                      <option value="normal">通常</option>
-                      <option value="rest_next">次のみ休</option>
-                      <option value="rest_indef">しばらく休</option>
-                      <option value="prefer_play">連続希望</option>
-                      <option value="leave_early">早退予定</option>
-                      <option value="left">帰宅済</option>
-                    </select>
+                <h2 style={{ fontSize: '1.4rem', fontWeight: 900, marginBottom: '14px', color: '#1e3a8a' }}>参加者管理 ＆ ダブルスペア固定</h2>
+
+                {/* 固定ペアの表示と設定 */}
+                <div style={{ backgroundColor: '#fefce8', border: '2px solid #facc15', borderRadius: '10px', padding: '14px', marginBottom: '16px' }}>
+                  <div style={{ fontSize: '1.15rem', fontWeight: 900, color: '#854d0e', marginBottom: '6px' }}>
+                    🔒 現在の固定ペア ({session.fixedPairs?.length || 0}組)
                   </div>
-                ))}
+                  <div style={{ fontSize: '0.95rem', color: '#713f12', marginBottom: '8px' }}>
+                    固定されたペアは、対戦表作成時に必ず同じチームとして一緒に出場します。
+                  </div>
+
+                  {session.fixedPairs && session.fixedPairs.length > 0 ? (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+                      {session.fixedPairs.map((pair, idx) => (
+                        <div key={idx} style={{ backgroundColor: '#ffffff', border: '2px solid #eab308', borderRadius: '6px', padding: '6px 12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ fontSize: '1.1rem', fontWeight: 800 }}>
+                            {getP(pair[0])?.name} ＆ {getP(pair[1])?.name}
+                          </span>
+                          <button
+                            onClick={() => handleRemoveFixedPair(idx)}
+                            style={{ backgroundColor: '#ef4444', color: '#fff', border: 'none', borderRadius: '4px', padding: '2px 6px', fontSize: '0.85rem', fontWeight: 'bold', cursor: 'pointer' }}
+                          >
+                            解除
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.9rem', color: '#a16207' }}>現在固定ペアはありません。</div>
+                  )}
+
+                  {pairSelectFirst && (
+                    <div style={{ marginTop: '8px', padding: '6px 10px', backgroundColor: '#fed7aa', color: '#9a3412', borderRadius: '6px', fontWeight: 'bold', fontSize: '0.95rem' }}>
+                      👉 1人目【{getP(pairSelectFirst)?.name}】を選択中。下の名簿からペアにしたい2人目の「ペア固定」を押してください。
+                    </div>
+                  )}
+                </div>
+
+                {/* 途中参加追加フォーム */}
+                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                  <input
+                    type="text"
+                    placeholder="途中参加者の名前"
+                    value={addName}
+                    onChange={(e) => setAddName(e.target.value)}
+                    style={{ flex: 1, padding: '12px 14px', border: '2px solid #cbd5e1', borderRadius: '8px', fontSize: '1.15rem' }}
+                  />
+                  <button
+                    onClick={() => {
+                      if (!addName.trim()) return;
+                      saveState({
+                        ...session,
+                        players: [...session.players, {
+                          id: `p_${Date.now()}`,
+                          name: addName.trim(),
+                          status: 'normal',
+                          matchCount: 0,
+                          restCount: 0,
+                          lastPlayedRound: -1,
+                          lastRestedRound: -1
+                        }]
+                      });
+                      setAddName('');
+                    }}
+                    style={{ backgroundColor: '#0284c7', color: '#ffffff', border: 'none', padding: '12px 20px', borderRadius: '8px', fontWeight: 800, fontSize: '1.1rem', cursor: 'pointer' }}
+                  >
+                    追加
+                  </button>
+                </div>
+
+                {/* 参加者一覧 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  {session.players.map((p) => {
+                    const isFirstSelected = pairSelectFirst === p.id;
+                    return (
+                      <div
+                        key={p.id}
+                        style={{
+                          border: `2px solid ${isFirstSelected ? '#ea580c' : '#e2e8f0'}`,
+                          borderRadius: '10px',
+                          padding: '12px 16px',
+                          backgroundColor: isFirstSelected ? '#fff7ed' : '#ffffff',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center'
+                        }}
+                      >
+                        <div>
+                          <span style={{ fontSize: '1.35rem', fontWeight: 800 }}>{p.name}</span>
+                          <span style={{ fontSize: '1rem', color: '#64748b', marginLeft: '12px', fontWeight: 700 }}>
+                            試合: <b style={{ color: '#0284c7' }}>{p.matchCount}</b> / 休: {p.restCount}
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <button
+                            onClick={() => handleToggleFixPair(p.id)}
+                            style={{
+                              backgroundColor: isFirstSelected ? '#ea580c' : '#fef08a',
+                              color: isFirstSelected ? '#fff' : '#854d0e',
+                              border: '1px solid #eab308',
+                              padding: '6px 10px',
+                              borderRadius: '6px',
+                              fontWeight: 800,
+                              fontSize: '0.9rem',
+                              cursor: 'pointer'
+                            }}
+                          >
+                            {isFirstSelected ? '選択解除' : '🔒 ペア固定'}
+                          </button>
+
+                          <select
+                            value={p.status}
+                            onChange={(e) => {
+                              const updated = session.players.map(x => x.id === p.id ? { ...x, status: e.target.value } : x);
+                              saveState({ ...session, players: updated });
+                            }}
+                            style={{ fontSize: '0.95rem', padding: '6px 8px', borderRadius: '6px', border: '1px solid #cbd5e1', fontWeight: 700 }}
+                          >
+                            <option value="normal">通常参加</option>
+                            <option value="rest_next">次のみ休憩</option>
+                            <option value="rest_indef">しばらく休</option>
+                            <option value="prefer_play">連続希望</option>
+                            <option value="leave_early">早退予定</option>
+                            <option value="left">帰宅済み</option>
+                          </select>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
+
+            {/* ================= ③ 新規作成 ＆ データ管理タブ ================= */}
             {tab === 'create' && (
               <div>
-                <h3>新しい練習会</h3>
-                <label style={{ fontSize: '0.85rem' }}>コート数:</label>
-                <div style={{ display: 'flex', gap: '6px', margin: '4px 0 12px 0' }}>
-                  {[1, 2, 3, 4].map(n => (
-                    <button key={n} onClick={() => setNewCourts(n)} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #0284c7', backgroundColor: newCourts === n ? '#0284c7' : '#fff', color: newCourts === n ? '#fff' : '#0284c7', fontWeight: 'bold' }}>{n}面</button>
-                  ))}
+                <h2 style={{ fontSize: '1.4rem', fontWeight: 900, marginBottom: '14px', color: '#1e3a8a' }}>新しい練習会の作成</h2>
+                
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                  <div>
+                    <label style={{ fontSize: '1.05rem', fontWeight: 800, color: '#334155' }}>コート面数:</label>
+                    <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+                      {[1, 2, 3, 4].map(n => (
+                        <button
+                          key={n}
+                          type="button"
+                          onClick={() => setNewCourts(n)}
+                          style={{
+                            flex: 1,
+                            padding: '12px',
+                            borderRadius: '8px',
+                            border: '2px solid #0284c7',
+                            backgroundColor: newCourts === n ? '#0284c7' : '#ffffff',
+                            color: newCourts === n ? '#ffffff' : '#0284c7',
+                            fontWeight: 900,
+                            fontSize: '1.2rem',
+                            cursor: 'pointer'
+                          }}
+                        >
+                          {n}面
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '1.05rem', fontWeight: 800, color: '#334155' }}>参加者名簿 (改行またはカンマ区切り):</label>
+                    <textarea
+                      rows="7"
+                      value={namesText}
+                      onChange={(e) => setNamesText(e.target.value)}
+                      style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '2px solid #cbd5e1', marginTop: '6px', fontSize: '1.1rem', boxSizing: 'border-box' }}
+                    />
+                  </div>
+
+                  <button
+                    onClick={handleCreate}
+                    style={{
+                      width: '100%',
+                      marginTop: '6px',
+                      padding: '16px',
+                      backgroundColor: '#0284c7',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '10px',
+                      fontWeight: 900,
+                      fontSize: '1.35rem',
+                      cursor: 'pointer',
+                      boxShadow: '0 4px 6px rgba(0,0,0,0.1)'
+                    }}
+                  >
+                    対戦表を作成してスタート
+                  </button>
+
+                  {/* 完全初期化リセットボタン */}
+                  {session && (
+                    <div style={{ marginTop: '24px', borderTop: '2px solid #e2e8f0', paddingTop: '16px' }}>
+                      <button
+                        onClick={handleFullReset}
+                        style={{
+                          width: '100%',
+                          padding: '14px',
+                          backgroundColor: '#fee2e2',
+                          color: '#dc2626',
+                          border: '2px solid #ef4444',
+                          borderRadius: '8px',
+                          fontWeight: 900,
+                          fontSize: '1.1rem',
+                          cursor: 'pointer'
+                        }}
+                      >
+                        🗑️ 練習会データをすべてリセット
+                      </button>
+                      <div style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '6px', textAlign: 'center' }}>
+                        ※リロードしてもデータは消えませんが、このボタンを押すと完全に初期状態に戻ります。
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <label style={{ fontSize: '0.85rem' }}>参加者名簿 (改行区切り):</label>
-                <textarea rows="6" value={names} onChange={e => setNames(e.target.value)} style={{ width: '100%', padding: '8px', borderRadius: '6px', border: '1px solid #cbd5e1', marginTop: '4px' }} />
-                <button onClick={handleCreate} style={{ width: '100%', marginTop: '12px', padding: '14px', backgroundColor: '#0284c7', color: '#fff', border: 'none', borderRadius: '8px', fontWeight: 'bold', fontSize: '1rem' }}>対戦表を作成してスタート</button>
               </div>
             )}
-          </div>
-          <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, maxWidth: '480px', margin: '0 auto', backgroundColor: '#fff', borderTop: '1px solid #e2e8f0', display: 'flex', height: '55px', zIndex: 20 }}>
-            <button onClick={() => setTab('match')} style={{ flex: 1, border: 'none', background: 'none', color: tab === 'match' ? '#0284c7' : '#64748b', fontWeight: 'bold' }}>🏸 対戦表</button>
-            <button onClick={() => setTab('players')} style={{ flex: 1, border: 'none', background: 'none', color: tab === 'players' ? '#0284c7' : '#64748b', fontWeight: 'bold' }}>👥 参加者</button>
-            <button onClick={() => setTab('create')} style={{ flex: 1, border: 'none', background: 'none', color: tab === 'create' ? '#0284c7' : '#64748b', fontWeight: 'bold' }}>⚙️ 新規</button>
-          </div>
+          </main>
+
+          {/* ================= フッターナビゲーション ================= */}
+          <nav style={{ position: 'fixed', bottom: 0, left: 0, right: 0, maxWidth: '850px', margin: '0 auto', backgroundColor: '#ffffff', borderTop: '2px solid #cbd5e1', display: 'flex', height: '65px', zIndex: 40, boxShadow: '0 -2px 6px rgba(0,0,0,0.05)' }}>
+            <button
+              onClick={() => setTab('match')}
+              style={{ flex: 1, border: 'none', background: 'none', color: tab === 'match' ? '#0284c7' : '#64748b', fontWeight: 900, fontSize: '1.05rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+            >
+              🏸<span style={{ fontSize: '0.9rem', marginTop: '2px' }}>対戦表</span>
+            </button>
+
+            <button
+              onClick={() => setTab('players')}
+              style={{ flex: 1, border: 'none', background: 'none', color: tab === 'players' ? '#0284c7' : '#64748b', fontWeight: 900, fontSize: '1.05rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+            >
+              👥<span style={{ fontSize: '0.9rem', marginTop: '2px' }}>参加者・固定</span>
+            </button>
+
+            <button
+              onClick={() => setTab('create')}
+              style={{ flex: 1, border: 'none', background: 'none', color: tab === 'create' ? '#0284c7' : '#64748b', fontWeight: 900, fontSize: '1.05rem', cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}
+            >
+              ⚙️<span style={{ fontSize: '0.9rem', marginTop: '2px' }}>設定・リセット</span>
+            </button>
+          </nav>
         </div>
       );
     }
+
     ReactDOM.createRoot(document.getElementById('root')).render(<App />);
   </script>
 </body>
